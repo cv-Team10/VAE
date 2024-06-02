@@ -3,6 +3,7 @@ import torch.nn as nn
 from torchvision import models
 
 import torch.optim as optim
+from loss import CustomLoss
 
 class VAE(nn.Module):
     def __init__(self, backbone):
@@ -42,10 +43,9 @@ class VAE(nn.Module):
             nn.Linear(4096, 512)
         )
 
-        self.fc1 = nn.Linear(36, 512)
-        self.fc2 = nn.Linear(30, 512)
+        self.fc1 = nn.Linear(51, 512)
         self.fc3 = nn.Linear(512, 512)
-        self.fc4 = nn.Linear(1024, 512)
+        self.fc4 = nn.Linear(512, 512)
         self.fc5_1 = nn.Linear(1024, 30)
         self.fc5_2 = nn.Linear(1024, 30)
         self.fc6 = nn.Linear(30, 512)
@@ -53,16 +53,18 @@ class VAE(nn.Module):
         self.fc8 = nn.Linear(512, 512)
         self.fc9 = nn.Linear(1024, 512)
         self.fc10 = nn.Linear(512, 512)
-        self.fc11 = nn.Linear(512, 36)
+        self.fc11 = nn.Linear(512, 34)
+        self.fc12 = nn.Linear(512, 17)
         self.relu = nn.ReLU()
+        self.flatten = nn.Flatten()
+        self.sigmoid = nn.Sigmoid()
     
-    def encode(self, scale_and_deformation, pose_class, image):
-        x1 = self.relu(self.fc1(scale_and_deformation))
-        x2 = self.relu(self.fc2(pose_class))
-        x3 = self.relu(self.backbone(image))
+    def encode(self, target, image): #target.size() = [B, 17, 3]
+        x1 = self.relu(self.fc1(self.flatten(target)))
+        x2 = self.relu(self.backbone(image))
 
         x1 = self.relu(self.fc3(x1))
-        x2 = self.relu(self.fc4(torch.cat([x2,x3], dim=1)))
+        x2 = self.relu(self.fc4(x2))
         
         mu = self.fc5_1(torch.cat([x1,x2], dim=1))
         logvar = self.fc5_2(torch.cat([x1,x2], dim=1))
@@ -73,47 +75,57 @@ class VAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps*std
     
-    def decode(self, z, pose_class, image):
-        x2 = self.relu(self.fc2(pose_class))
-        x3 = self.relu(self.backbone(image))
+    def decode(self, z, image):
+        x2 = self.relu(self.backbone(image))
 
         z = self.relu(self.fc6(z))
-        x = self.relu(self.fc4(torch.cat([x2,x3], dim=1)))
+        x = self.relu(self.fc4(x2))
         
         z = self.relu(self.fc7(z))
         x = self.relu(self.fc8(x))
         
         x = self.relu(self.fc9(torch.cat([z,x], dim=1)))
         x = self.relu(self.fc10(x))
-        x = self.fc11(x)
+
+        reg = self.fc11(x).view(-1, 17, 2)
+        cls = self.sigmoid(self.fc12(x)).unsqueeze(-1)
+        x = torch.cat((reg, cls), dim=-1)
 
         return x
     
-    def forward(self, scale_and_deformation, pose_class, image):
-        mu, logvar = self.encode(scale_and_deformation, pose_class, image)
+    def forward(self, target, origin_image, masked_image):
+        mu, logvar = self.encode(target, origin_image)
         z = self.reparameterize(mu, logvar)
-        return self.decode(z, pose_class, image), mu, logvar
+        return self.decode(z, masked_image), mu, logvar
     
 class vae_loss(nn.Module):
-    def __init__(self):
+    def __init__(self, LossFunction):
         super(vae_loss, self).__init__()
-    def forward(self, target, predict, mu, logvar):
-        L2 = torch.sqrt(torch.sum((target - predict) ** 2))
+        self.criterion = LossFunction()
+    def forward(self, output, target, mu, logvar):
+        L2 = self.criterion(output, target)
         KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         return L2 + KLD
 
-random_image = torch.randn(1,3,224,224)
-random_class = torch.rand(1, 30)
-random_class = random_class.to(torch.float32)
-random_scale = torch.randn(1, 36)
-print(random_class)
-criterion = vae_loss()
+
+'''
 model = VAE('VGG')
+criterion = vae_loss(CustomLoss)
+
+
+origin_image = torch.randn(1,3,224,224)
+masked_image = torch.randn(1,3,224,224)
+random_label = torch.randn(1, 17, 3)
+random_label[:, :, 2] = 1
+print(random_scale)
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 optimizer.zero_grad()
-output, mu, logvar = model(random_scale, random_class, random_image)
-loss = criterion(random_scale, output, mu, logvar)
+
+output, mu, logvar = model(random_scale, origin_image, masked_image)
+loss = criterion(output, random_label, mu, logvar)
+
 print("loss!!")
 print(loss)
-loss.backward
+loss.backward()
 optimizer.step()
+'''
